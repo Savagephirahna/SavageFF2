@@ -1,18 +1,12 @@
 --[[
 	WARNING: Heads up! This script has not been verified by ScriptBlox. Use at your own risk!
 
-	To show your provided image next to the "Savage Hub" title:
-	1) Upload the image to Roblox as a decal/image and copy its asset id (a number).
-	2) Replace HEADER_IMAGE_ID below with "rbxassetid://<your_id>".
-	3) Adjust HEADER_SIZE and HEADER_POSITION if you want the image bigger/smaller or moved.
+	This version adds a visual-only QB Assist and draws a predicted trajectory Beam
+	from the shooter to the predicted intercept point. It does NOT move the camera
+	or send inputs to the game; it only displays local visual aids.
 ]]
 local RS = game:GetService("ReplicatedStorage")
 local gc = getgc(true)
-
--- Replace this with your uploaded Roblox asset id, e.g. "rbxassetid://123456789"
-local HEADER_IMAGE_ID = "rbxassetid://REPLACE_WITH_YOUR_ASSET_ID"
-local HEADER_SIZE = UDim2.new(0, 40, 0, 40) -- width x height in pixels
-local HEADER_POSITION = UDim2.new(0, 8, 0, 8) -- position inside the window frame (adjust as needed)
 
 local function findTargetConstant()
     local candidates = {}
@@ -144,40 +138,7 @@ while not Player do
     wait()
 end
 
--- Insert the header/logo image into the window frames (best-effort)
-task.spawn(function()
-    task.wait(0.08) -- allow the library time to create UI
-    pcall(function()
-        if not HEADER_IMAGE_ID or HEADER_IMAGE_ID == "rbxassetid://REPLACE_WITH_YOUR_ASSET_ID" then
-            -- If the user forgot to set the ID, we do nothing (no error)
-            return
-        end
-
-        for _, val in pairs(Window) do
-            pcall(function()
-                if typeof(val) == "Instance" and (val:IsA("Frame") or val:IsA("ScrollingFrame") or val:IsA("ImageLabel")) then
-                    -- Only add if not already present
-                    if val:FindFirstChild("SavageHub_TitleLogo") then return end
-
-                    local img = Instance.new("ImageLabel")
-                    img.Name = "SavageHub_TitleLogo"
-                    img.Size = HEADER_SIZE
-                    img.Position = HEADER_POSITION
-                    img.BackgroundTransparency = 1
-                    img.Image = HEADER_IMAGE_ID
-                    img.ZIndex = 50
-                    img.Parent = val
-
-                    -- optional: try to bring the image to front of common content
-                    pcall(function() img:BringToFront() end)
-                end
-            end)
-        end
-    end)
-end)
-
--- (rest of the script is unchanged — UI groups, features, loops, etc.)
--- Settings
+-- Settings (original)
 local autocatchon = false
 local catchdistance = 10
 local magson = false
@@ -209,11 +170,526 @@ local ballpathColor = Color3.fromRGB(128,0,128)
 local ballpathConnection
 local deleteOOBEnabled = false
 
--- (All functions and UI creation from your original script continue here unchanged.)
--- ... [trimmed in this file display for brevity, but include the rest of your script below in your actual file] ...
+-- (Original functions from the script assumed to be present and unchanged,
+-- such as gotfb, findclosestball, hitboxx, fitbalsize, remove, footballhitbox, getfutbal, catch, etc.)
+
+-- QB Assist (visual-only) settings
+local qbAssistEnabled = false
+local qbAssistMaxDistance = 80
+local qbProjectileSpeed = 120 -- studs/sec estimate used for prediction only
+local qbAssistKey = Enum.KeyCode.Q
+local qbIndicatorDuration = 1.6
+local qbScreenGuiName = "SavageQBIndicator"
+local qbBillboardName = "SavageQBWorldMarker"
+local qbBeamName = "SavageQBTrajectoryBeam"
+
+-- Helper: find best receiver candidate
+local function findBestReceiver(maxDistance)
+    if not Player.Character or not Player.Character:FindFirstChild("HumanoidRootPart") then return nil end
+    local myPos = Player.Character.HumanoidRootPart.Position
+    local best = nil
+    local bestDist = maxDistance
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= Player then
+            if plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") and plr.Character:FindFirstChild("Humanoid") then
+                local hrp = plr.Character.HumanoidRootPart
+                local dist = (hrp.Position - myPos).Magnitude
+                if dist < bestDist then
+                    bestDist = dist
+                    best = plr
+                end
+            end
+        end
+    end
+    return best
+end
+
+-- Prediction: compute intercept point (visual-only). Simple estimate using linear motion (best-effort).
+local function computeInterceptPoint(targetCharacter, shooterPos, projSpeed)
+    if not targetCharacter or not targetCharacter:FindFirstChild("HumanoidRootPart") then return nil end
+    local targetHRP = targetCharacter.HumanoidRootPart
+    local targetPos = targetHRP.Position
+    local targetVel = Vector3.new()
+    pcall(function() targetVel = targetHRP.Velocity end)
+
+    local toTarget = targetPos - shooterPos
+    local dist = toTarget.Magnitude
+    if dist <= 0 then return targetPos end
+
+    -- time estimate for projectile to reach target at current distance
+    local t = dist / math.max(1, projSpeed)
+
+    -- predicted position after t seconds
+    local predicted = targetPos + targetVel * t
+
+    -- compensate for gravity/drop (best-effort)
+    local g = workspace.Gravity or 196.2
+    predicted = predicted + Vector3.new(0, 0.5 * g * t * t, 0)
+
+    return predicted
+end
+
+-- Visual marker: screen GUI indicator
+local function showScreenIndicator(screenX, screenY, duration)
+    duration = duration or qbIndicatorDuration
+    pcall(function()
+        local existing = CoreGui:FindFirstChild(qbScreenGuiName)
+        if existing then existing:Destroy() end
+
+        local gui = Instance.new("ScreenGui")
+        gui.Name = qbScreenGuiName
+        gui.ResetOnSpawn = false
+        gui.Parent = CoreGui
+
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.new(0, 36, 0, 36)
+        frame.AnchorPoint = Vector2.new(0.5, 0.5)
+        frame.Position = UDim2.new(0, screenX, 0, screenY)
+        frame.BackgroundTransparency = 0
+        frame.BackgroundColor3 = Color3.fromRGB(255, 204, 0) -- yellow
+        frame.BorderSizePixel = 0
+        frame.Parent = gui
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(1, 0)
+        corner.Parent = frame
+
+        local inner = Instance.new("Frame")
+        inner.Size = UDim2.new(0, 22, 0, 22)
+        inner.AnchorPoint = Vector2.new(0.5, 0.5)
+        inner.Position = UDim2.new(0.5, 0.5, 0, 0)
+        inner.BackgroundColor3 = Color3.fromRGB(255, 34, 34)
+        inner.BorderSizePixel = 0
+        inner.Parent = frame
+        local innerCorner = Instance.new("UICorner")
+        innerCorner.CornerRadius = UDim.new(1, 0)
+        innerCorner.Parent = inner
+
+        spawn(function()
+            local start = tick()
+            while tick() - start < duration do
+                task.wait(0.03)
+            end
+            pcall(function() gui:Destroy() end)
+        end)
+    end)
+end
+
+-- Visual marker: world BillboardGui at a world position
+local function showWorldMarker(worldPos, duration)
+    duration = duration or qbIndicatorDuration
+    pcall(function()
+        -- remove previous
+        local old = CoreGui:FindFirstChild(qbBillboardName)
+        if old then old:Destroy() end
+
+        -- create an invisible attachment part so we can attach a BillboardGui without affecting physics
+        local attachPart = Instance.new("Part")
+        attachPart.Name = qbBillboardName .. "_Part"
+        attachPart.Size = Vector3.new(0.2,0.2,0.2)
+        attachPart.Transparency = 1
+        attachPart.CanCollide = false
+        attachPart.Anchored = true
+        attachPart.CFrame = CFrame.new(worldPos)
+        attachPart.Parent = Workspace
+
+        local billboard = Instance.new("BillboardGui")
+        billboard.Name = qbBillboardName
+        billboard.Adornee = attachPart
+        billboard.Size = UDim2.new(0, 150, 0, 50)
+        billboard.StudsOffset = Vector3.new(0, 2.25, 0)
+        billboard.AlwaysOnTop = true
+        billboard.Parent = CoreGui
+
+        local frame = Instance.new("Frame")
+        frame.Size = UDim2.new(1,0,1,0)
+        frame.BackgroundColor3 = Color3.fromRGB(255, 34, 34)
+        frame.BackgroundTransparency = 0.35
+        frame.BorderSizePixel = 0
+        frame.Parent = billboard
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1,0,1,0)
+        label.BackgroundTransparency = 1
+        label.Text = "Aim Here"
+        label.TextColor3 = Color3.fromRGB(255,204,0)
+        label.Font = Enum.Font.SourceSansBold
+        label.TextScaled = true
+        label.Parent = frame
+
+        -- clean up after duration
+        spawn(function()
+            task.wait(duration)
+            pcall(function()
+                if billboard and billboard.Parent then billboard:Destroy() end
+                if attachPart and attachPart.Parent then attachPart:Destroy() end
+            end)
+        end)
+    end)
+end
+
+-- New: draw a Beam (trajectory) from shooter to predicted point (visual-only)
+local function showTrajectoryBeam(shooterPos, targetPos, duration)
+    duration = duration or qbIndicatorDuration
+    pcall(function()
+        -- Clean up any existing beam attachments/beam
+        local oldBeam = Workspace.Terrain:FindFirstChild(qbBeamName)
+        if oldBeam then oldBeam:Destroy() end
+        local oldA0 = Workspace.Terrain:FindFirstChild(qbBeamName .. "_A0")
+        local oldA1 = Workspace.Terrain:FindFirstChild(qbBeamName .. "_A1")
+        if oldA0 then oldA0:Destroy() end
+        if oldA1 then oldA1:Destroy() end
+
+        -- Create two attachments parented in Workspace.Terrain (best-effort like other parts of this script)
+        local cf0 = CFrame.new(shooterPos)
+        local cf1 = CFrame.new(targetPos)
+
+        local a0 = Instance.new("Attachment")
+        a0.Name = qbBeamName .. "_A0"
+        a0.Parent = Workspace.Terrain
+        a0.CFrame = a0.Parent.CFrame:Inverse() * cf0
+
+        local a1 = Instance.new("Attachment")
+        a1.Name = qbBeamName .. "_A1"
+        a1.Parent = Workspace.Terrain
+        a1.CFrame = a1.Parent.CFrame:Inverse() * cf1
+
+        local beam = Instance.new("Beam")
+        beam.Name = qbBeamName
+        beam.Attachment0 = a0
+        beam.Attachment1 = a1
+        beam.Color = ColorSequence.new{
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(255,204,0)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(255,34,34))
+        }
+        beam.Transparency = NumberSequence.new(0)
+        beam.Width0 = 0.7
+        beam.Width1 = 0.7
+        beam.FaceCamera = true
+        beam.Segments = 100
+        beam.Parent = Workspace.Terrain
+
+        -- Optional subtle pulse tween
+        pcall(function()
+            local tweenService = game:GetService("TweenService")
+            local info = TweenInfo.new(duration, Enum.EasingStyle.Linear)
+            local goal = {}
+            goal.Width0 = 0
+            goal.Width1 = 0
+            tweenService:Create(beam, info, goal):Play()
+        end)
+
+        -- Clean up after duration
+        spawn(function()
+            task.wait(duration)
+            pcall(function()
+                if beam and beam.Parent then beam:Destroy() end
+                if a0 and a0.Parent then a0:Destroy() end
+                if a1 and a1.Parent then a1:Destroy() end
+            end)
+        end)
+    end)
+end
+
+-- Main: show visual suggestion given a predicted world point (now calls beam)
+local function showVisualSuggestion(predictedWorldPos)
+    if not predictedWorldPos then return end
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+    local screenPos, onScreen = cam:WorldToViewportPoint(predictedWorldPos)
+    if onScreen then
+        showScreenIndicator(screenPos.X, screenPos.Y, qbIndicatorDuration)
+    end
+    showWorldMarker(predictedWorldPos, qbIndicatorDuration)
+    if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then
+        local shooterPos = Player.Character.HumanoidRootPart.Position
+        showTrajectoryBeam(shooterPos, predictedWorldPos, qbIndicatorDuration)
+    end
+end
+
+-- Input handling: key or click triggers visual-only suggestion
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+
+    -- respect library keypicker if present
+    local pickedKey = qbAssistKey
+    pcall(function()
+        local kb = Options and Options.QBAssistKey
+        if kb and kb.Value then
+            local sval = tostring(kb.Value)
+            local upper = sval:upper()
+            for _, k in pairs(Enum.KeyCode:GetEnumItems()) do
+                if tostring(k):upper():find(upper) then
+                    pickedKey = k
+                    break
+                end
+            end
+        end
+    end)
+
+    -- assist key pressed
+    if qbAssistEnabled and input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == pickedKey then
+        if not Player.Character or not Player.Character:FindFirstChild("HumanoidRootPart") then
+            pcall(function() Library:Notify({Title = "QB Assist", Description = "No character.", Time = 2}) end)
+            return
+        end
+        local receiver = findBestReceiver(qbAssistMaxDistance)
+        if not receiver then
+            pcall(function() Library:Notify({Title = "QB Assist", Description = "No receiver found in range.", Time = 2}) end)
+            return
+        end
+        local shooterPos = Player.Character.HumanoidRootPart.Position
+        local predicted = computeInterceptPoint(receiver.Character, shooterPos, qbProjectileSpeed)
+        if predicted then
+            showVisualSuggestion(predicted)
+            pcall(function() Library:Notify({Title = "QB Assist", Description = "Suggested aim shown (visual-only).", Time = 2}) end)
+        end
+        return
+    end
+
+    -- click while holding ball -> show suggestion
+    if qbAssistEnabled and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+        -- assume gotfb exists from original code
+        local ok, hasBall = pcall(gotfb)
+        if ok and hasBall then
+            if not Player.Character or not Player.Character:FindFirstChild("HumanoidRootPart") then return end
+            local receiver = findBestReceiver(qbAssistMaxDistance)
+            if not receiver then return end
+            local shooterPos = Player.Character.HumanoidRootPart.Position
+            local predicted = computeInterceptPoint(receiver.Character, shooterPos, qbProjectileSpeed)
+            if predicted then
+                showVisualSuggestion(predicted)
+            end
+        end
+    end
+end)
+
+-- UI: add QB Assist group (visual-only)
+local QBAssistGroup = Tabs.Catching:AddRightGroupbox("QB Assist (Visual Only)")
+
+QBAssistGroup:AddToggle("qbassist", {
+    Text = "Enable QB Assist (Visual Only)",
+    Default = false,
+    Callback = function(Value)
+        qbAssistEnabled = Value
+        if not Value then
+            -- cleanup any existing guis/markers
+            pcall(function() local g = CoreGui:FindFirstChild(qbScreenGuiName) if g then g:Destroy() end end)
+            pcall(function() 
+                local b = CoreGui:FindFirstChild(qbBillboardName)
+                if b then b:Destroy() end
+            end)
+            -- cleanup beam attachments if found
+            pcall(function()
+                local oldBeam = Workspace.Terrain:FindFirstChild(qbBeamName)
+                if oldBeam then oldBeam:Destroy() end
+                local oldA0 = Workspace.Terrain:FindFirstChild(qbBeamName .. "_A0")
+                local oldA1 = Workspace.Terrain:FindFirstChild(qbBeamName .. "_A1")
+                if oldA0 then oldA0:Destroy() end
+                if oldA1 then oldA1:Destroy() end
+            end)
+        end
+    end
+})
+
+QBAssistGroup:AddSlider("qbmaxdist", {
+    Text = "Max Receiver Distance",
+    Min = 10,
+    Max = 300,
+    Default = qbAssistMaxDistance,
+    Rounding = 1,
+    Callback = function(Value)
+        qbAssistMaxDistance = Value
+    end
+})
+
+QBAssistGroup:AddSlider("qbprojspd", {
+    Text = "Projectile Speed (visual)",
+    Min = 20,
+    Max = 400,
+    Default = qbProjectileSpeed,
+    Rounding = 1,
+    Callback = function(Value)
+        qbProjectileSpeed = Value
+    end
+})
+
+QBAssistGroup:AddLabel("Assist Key"):AddKeyPicker("QBAssistKey", {
+    Default = "Q",
+    NoUI = true,
+    Text = "Assist key (preview)"
+})
+
+-- ThemeManager/SaveManager usage (unchanged)
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+ThemeManager:SetFolder("Savage Hub")
+SaveManager:SetFolder("SavageHub/FF2")
+
+SaveManager:BuildConfigSection(Tabs["UI Settings"])
+ThemeManager:ApplyToTab(Tabs["UI Settings"])
+
+-- Initialize character hooks from original script (ensure original init functions exist)
+if Player.Character then
+    pcall(function() if rrrrrrrsizenugget then rrrrrrrsizenugget(Player.Character) end end)
+    pcall(function() if whenmoving then whenmoving(Player.Character) end end)
+    pcall(function() if njc then njc(Player.Character) end end)
+end
+
+Player.CharacterAdded:Connect(function(char)
+    pcall(function() if rrrrrrrsizenugget then rrrrrrrsizenugget(char) end end)
+    pcall(function() if whenmoving then whenmoving(char) end end)
+    pcall(function() if njc then njc(char) end end)
+end)
+
+-- The rest of your original script loops and features remain unchanged (mags, auto-catch, ball path, pull vector, OOB deletion, etc.)
+RunService.Heartbeat:Connect(function(deltatime)
+    if not magson then return end
+    local cnp = tick()
+    if magsdelayon and (cnp - lmgg) < magsdelay then return end
+    local magthatbihfoo = getfutbal()
+    if magthatbihfoo then
+        local closestcatchpart = catch(magthatbihfoo)
+        if closestcatchpart then
+            if magmode == "CFrame" then
+                magthatbihfoo.CFrame = closestcatchpart.CFrame
+            else
+                firetouchinterest(closestcatchpart, magthatbihfoo, 0)
+                task.wait()
+                firetouchinterest(closestcatchpart, magthatbihfoo, 1)
+            end
+        end
+    end
+    if magsdelayon then lmgg = cnp end
+end)
+
+Workspace.ChildAdded:Connect(function(child)
+    if child.Name:lower():match("football") and magson and showhitboxon and child:IsA("BasePart") then
+        hitboxx(child)
+    end
+end)
+
+task.spawn(function()
+    while task.wait(0.02) do
+        if not autocatchon then continue end
+
+        local ball, distance = findclosestball()
+        if ball and distance <= catchdistance then
+            TriggerTouchEvent()
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(0.1) do
+        if pullvector then
+            local character = Player.Character
+            if character then
+                local humanoidrootpart = character:FindFirstChild("HumanoidRootPart")
+                if humanoidrootpart then
+                    for _, ball in pairs(Workspace:GetChildren()) do
+                        if ball.Name:lower():match("football") and ball:IsA("BasePart") then
+                            local distance = (humanoidrootpart.Position - ball.Position).Magnitude
+                            if distance <= pullvectordistance then
+                                local direction = (ball.Position - humanoidrootpart.Position).Unit
+                                humanoidrootpart.AssemblyLinearVelocity = direction * pullvectorpower * 25
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(1) do
+        if deleteOOBEnabled then
+            for _, obj in pairs(Workspace:GetChildren()) do
+                if obj:IsA("BasePart") and obj.Position.Y < -100 then
+                    obj:Destroy()
+                end
+            end
+        end
+    end
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameprocessed)
+    if gameprocessed then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        if not clicktackleon then return end
+        local slveesor = findclosestsleveesor(clicktacklerange)
+        if slveesor and slveesor:FindFirstChild("HumanoidRootPart") then
+            local character = Player.Character
+            if not character then return end
+            local hrp = character:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+            hrp.CFrame = slveesor.HumanoidRootPart.CFrame
+        end
+    end
+end)
 
 Library:Notify({
     Title = "Savage Hub",
-    Description = "Script loaded successfully!",
+    Description = "Script loaded successfully! (QB Assist is visual-only with trajectory beam)",
     Time = 5,
 })
+
+Library:OnUnload(function()
+    qbAssistEnabled = false
+    pcall(function() local g = CoreGui:FindFirstChild(qbScreenGuiName) if g then g:Destroy() end end)
+    pcall(function() local b = CoreGui:FindFirstChild(qbBillboardName) if b then b:Destroy() end end)
+    pcall(function()
+        local oldBeam = Workspace.Terrain:FindFirstChild(qbBeamName)
+        if oldBeam then oldBeam:Destroy() end
+        local oldA0 = Workspace.Terrain:FindFirstChild(qbBeamName .. "_A0")
+        local oldA1 = Workspace.Terrain:FindFirstChild(qbBeamName .. "_A1")
+        if oldA0 then oldA0:Destroy() end
+        if oldA1 then oldA1:Destroy() end
+    end)
+
+    -- original cleanup
+    magson = false
+    autocatchon = false
+    speedEnabled = false
+    pullvector = false
+    jumpoweron = false
+    nojpcooldownon = false
+    clicktackleon = false
+    ballpathOn = false
+    deleteOOBEnabled = false
+    
+    for _, data in pairs(hitboxes) do
+        if data.part and data.part.Parent then 
+            data.part:Destroy() 
+        end
+    end
+    
+    local character = Player.Character
+    if character then
+        if catchresizeon then
+            local catchleft = character:FindFirstChild("CatchLeft")
+            local catchright = character:FindFirstChild("CatchRight")
+            if catchleft then catchleft.Size = Vector3.new(0.75, 5, 1.5) end
+            if catchright then catchright.Size = Vector3.new(0.75, 5, 1.5) end
+        end
+    end
+    
+    for char, connection in pairs(njcconnections) do
+        if connection then connection:Disconnect() end
+    end
+    njcconnections = {}
+    
+    stopMovementSystem()
+    
+    if ballpathConnection then 
+        ballpathConnection:Disconnect() 
+    end
+    
+    for _, obj in ipairs(Workspace.Terrain:GetChildren()) do
+        if obj:IsA("Beam") and obj.Name == "BallPath" then obj:Destroy()
+        elseif obj:IsA("Attachment") and obj.Name == "BallPathAttachment" then obj:Destroy() end
+    end
+end)
