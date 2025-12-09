@@ -804,15 +804,14 @@ SaveManager:SetFolder("SavageHub/FF2")
 SaveManager:BuildConfigSection(Tabs["UI Settings"])
 ThemeManager:ApplyToTab(Tabs["UI Settings"])
 
--- Apply a red & yellow theme to the menu/UI (best-effort; uses pcall so it won't error if API differs)
+-- Apply a red & yellow theme to the script window background only (removed menu/CoreGui recolor)
 do
     local red = Color3.fromRGB(255, 34, 34)
     local yellow = Color3.fromRGB(255, 204, 0)
 
-    -- Try ThemeManager API
+    -- ThemeManager attempt (best-effort)
     pcall(function()
         if ThemeManager and ThemeManager.SetTheme then
-            -- many theme managers accept a table of colors; we attempt a best-effort shape
             ThemeManager:SetTheme({
                 Accent = yellow,
                 Primary = red,
@@ -823,7 +822,7 @@ do
         end
     end)
 
-    -- Try Library API (common names)
+    -- Library API attempts (best-effort)
     pcall(function()
         if Library and Library.SetAccentColor then
             Library:SetAccentColor(yellow)
@@ -834,50 +833,40 @@ do
         end
     end)
 
-    -- Best-effort runtime recolor of UI instances created by the library:
+    -- Recolor only the Window/table instances (best-effort)
     task.spawn(function()
-        task.wait(0.1) -- wait a moment for UI to be constructed
-        for _, gui in ipairs(CoreGui:GetDescendants()) do
-            pcall(function()
-                if not gui or not gui.Parent then return end
-                if gui:IsA("Frame") or gui:IsA("ScrollingFrame") or gui:IsA("ImageLabel") or gui:IsA("ImageButton") then
-                    -- try to recolor frames that likely belong to the menu
-                    local name = tostring(gui.Name):lower()
-                    if name:find("menu") or name:find("settings") or name:find("ui") or name:find("sav") or name:find("window") or name:find("tab") then
-                        gui.BackgroundColor3 = red
-                    end
-                elseif gui:IsA("TextLabel") or gui:IsA("TextButton") then
-                    local name = tostring(gui.Name):lower()
-                    if name:find("menu") or name:find("settings") or name:find("ui") or name:find("sav") or name:find("window") or name:find("tab") then
-                        pcall(function() gui.BackgroundColor3 = red end)
-                        pcall(function() gui.TextColor3 = yellow end)
-                    end
-                end
-            end)
-        end
-
-        -- If MenuGroup has direct Instance children, recolor them too (best-effort)
+        task.wait(0.1) -- let UI construct
         pcall(function()
-            if type(MenuGroup) == "table" then
-                for _, v in pairs(MenuGroup) do
-                    if typeof(v) == "Instance" then
-                        if v:IsA("Frame") or v:IsA("ScrollingFrame") then
-                            pcall(function() v.BackgroundColor3 = red end)
-                        elseif v:IsA("TextLabel") or v:IsA("TextButton") then
-                            pcall(function() v.BackgroundColor3 = red v.TextColor3 = yellow end)
+            if Window and type(Window) == "table" then
+                for _, val in pairs(Window) do
+                    if typeof(val) == "Instance" then
+                        if val:IsA("Frame") or val:IsA("ScrollingFrame") or val:IsA("ImageLabel") or val:IsA("ImageButton") then
+                            pcall(function() val.BackgroundColor3 = red end)
+                        elseif val:IsA("TextLabel") or val:IsA("TextButton") then
+                            pcall(function() val.BackgroundColor3 = red val.TextColor3 = yellow end)
                         end
                     end
                 end
             end
-        end)
 
-        -- Try to recolor the window main frames if present
-        pcall(function()
-            if Window and type(Window) == "table" then
-                for _, val in pairs(Window) do
-                    if typeof(val) == "Instance" and (val:IsA("Frame") or val:IsA("ScrollingFrame")) then
-                        pcall(function() val.BackgroundColor3 = red end)
-                    end
+            -- Also attempt to recolor tab contents in Tabs table (if available)
+            if Tabs and type(Tabs) == "table" then
+                for _, tab in pairs(Tabs) do
+                    pcall(function()
+                        if typeof(tab) == "Instance" and (tab:IsA("Frame") or tab:IsA("ScrollingFrame")) then
+                            tab.BackgroundColor3 = red
+                        elseif type(tab) == "table" then
+                            for _, v in pairs(tab) do
+                                if typeof(v) == "Instance" then
+                                    if v:IsA("Frame") or v:IsA("ScrollingFrame") then
+                                        pcall(function() v.BackgroundColor3 = red end)
+                                    elseif v:IsA("TextLabel") or v:IsA("TextButton") then
+                                        pcall(function() v.BackgroundColor3 = red v.TextColor3 = yellow end)
+                                    end
+                                end
+                            end
+                        end
+                    end)
                 end
             end
         end)
