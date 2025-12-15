@@ -1,6 +1,8 @@
 -- SavageHub.lua
 -- Place this LocalScript into StarterPlayerScripts in a Roblox Studio place you own.
--- Draggable menu (fixed), mobile-friendly toggle, sliders, and VectorForce-based flying.
+-- Draggable mobile-friendly menu, sliders, and VectorForce-based flying.
+-- Fixes: reliably applies WalkSpeed and JumpPower (with JumpHeight fallback),
+-- and ensures slider changes apply immediately and after respawn/stopFly.
 -- Use only in places you own or have permission to modify.
 
 local Players = game:GetService("Players")
@@ -16,8 +18,16 @@ local function getCharacter()
 end
 
 local char = getCharacter()
-local humanoid = char:FindFirstChild("Humanoid") or char:WaitForChild("Humanoid")
-local hrp = char:FindFirstChild("HumanoidRootPart") or char:WaitForChild("HumanoidRootPart")
+local humanoid = char:FindFirstChild("Humanoid")
+local hrp = char:FindFirstChild("HumanoidRootPart")
+
+-- Wait for humanoid/hrp if not present yet
+if not humanoid then
+	humanoid = char:WaitForChild("Humanoid")
+end
+if not hrp then
+	hrp = char:WaitForChild("HumanoidRootPart")
+end
 
 -- Savage Hub settings (defaults)
 local SavageHub = {
@@ -27,11 +37,33 @@ local SavageHub = {
 	FlySpeed = 100,         -- studs/sec target speed
 	FlyForceMax = 300,      -- maximum force (N) clamp
 	FlyResponsiveness = 35, -- higher -> snappier/stronger accel
-	WalkSpeed = humanoid.WalkSpeed or 16,
-	JumpPower = humanoid.JumpPower or 50,
+	WalkSpeed = (humanoid and humanoid.WalkSpeed) and humanoid.WalkSpeed or 16,
+	JumpPower = (humanoid and humanoid.JumpPower) and humanoid.JumpPower or 50,
 }
 
--- ========== UI Creation ==========
+-- ========== Utility: Apply humanoid settings ==========
+local function applyHumanoidSettings(h)
+	h = h or humanoid
+	if not h or not h.Parent then return end
+	-- Apply WalkSpeed
+	pcall(function()
+		if typeof(h.WalkSpeed) ~= "nil" then
+			h.WalkSpeed = SavageHub.WalkSpeed
+		end
+	end)
+	-- Try JumpPower, fallback to JumpHeight if necessary
+	local setJumpSucceeded = pcall(function()
+		-- Some Humanoids use JumpPower, others may use JumpHeight
+		h.JumpPower = SavageHub.JumpPower
+	end)
+	if not setJumpSucceeded then
+		pcall(function()
+			h.JumpHeight = SavageHub.JumpPower
+		end)
+	end
+end
+
+-- ========== UI Creation (mobile-friendly, draggable) ==========
 local function createUI()
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "SavageHubGUI"
@@ -39,7 +71,6 @@ local function createUI()
 	screenGui.Parent = player:WaitForChild("PlayerGui")
 	screenGui.IgnoreGuiInset = true
 
-	-- Main draggable frame (use AnchorPoint 0,0 to simplify dragging)
 	local main = Instance.new("Frame")
 	main.Name = "Main"
 	main.Size = UDim2.new(0, 360, 0, 260)
@@ -50,14 +81,13 @@ local function createUI()
 	main.Parent = screenGui
 	main.ClipsDescendants = true
 
-	-- Title bar (drag handle)
 	local title = Instance.new("Frame")
 	title.Name = "TitleBar"
 	title.Size = UDim2.new(1, 0, 0, 42)
 	title.Position = UDim2.new(0, 0, 0, 0)
 	title.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 	title.Parent = main
-	title.Active = true -- accept input for dragging
+	title.Active = true
 
 	local titleLabel = Instance.new("TextLabel")
 	titleLabel.Name = "TitleLabel"
@@ -71,7 +101,6 @@ local function createUI()
 	titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 	titleLabel.Parent = title
 
-	-- Close/Hide button
 	local closeBtn = Instance.new("TextButton")
 	closeBtn.Name = "Close"
 	closeBtn.Size = UDim2.new(0, 42, 0, 28)
@@ -83,7 +112,6 @@ local function createUI()
 	closeBtn.TextColor3 = Color3.fromRGB(255,255,255)
 	closeBtn.Parent = title
 
-	-- Content area (below title)
 	local content = Instance.new("Frame")
 	content.Name = "Content"
 	content.Size = UDim2.new(1, -12, 1, -52)
@@ -107,7 +135,6 @@ local function createUI()
 
 	local flyBtn = makeToggle("Fly", 0, SavageHub.Fly)
 
-	-- Slider builder: returns label and bar frame (bar.ChangeCallback will be set by caller)
 	local function makeSlider(labelText, y, minVal, maxVal, step, getVal)
 		local lbl = Instance.new("TextLabel")
 		lbl.Name = labelText.."Lbl"
@@ -127,7 +154,7 @@ local function createUI()
 		bar.Position = UDim2.new(0.5, 6, 0, y)
 		bar.BackgroundColor3 = Color3.fromRGB(70,70,70)
 		bar.Parent = content
-		bar.Active = true -- accept touch
+		bar.Active = true
 
 		local fill = Instance.new("Frame")
 		fill.Name = "Fill"
@@ -152,7 +179,6 @@ local function createUI()
 			lbl.Text = labelText .. ": " .. tostring(val)
 		end
 
-		-- Dragging logic supporting mouse & touch
 		local dragging = false
 		local dragInput
 
@@ -201,19 +227,18 @@ local function createUI()
 		return lbl, bar
 	end
 
-	-- Create sliders (spaced vertically)
+	-- sliders
 	local flySpeedLbl, flySpeedBar = makeSlider("FlySpeed", 48, 10, 600, 1, function() return SavageHub.FlySpeed end)
 	local flyForceLbl, flyForceBar = makeSlider("FlyForceMax", 86, 50, 4000, 10, function() return SavageHub.FlyForceMax end)
 	local respLbl, respBar = makeSlider("Responsiveness", 124, 1, 200, 1, function() return SavageHub.FlyResponsiveness end)
 	local walkLbl, walkBar = makeSlider("WalkSpeed", 162, 0, 500, 1, function() return SavageHub.WalkSpeed end)
 	local jumpLbl, jumpBar = makeSlider("JumpPower", 200, 0, 500, 1, function() return SavageHub.JumpPower end)
 
-	-- Mobile-friendly always-visible toggle button (bottom-left)
+	-- mobile toggle button
 	local toggleBtn = Instance.new("TextButton")
 	toggleBtn.Name = "ToggleBtn"
 	toggleBtn.Size = UDim2.new(0, 56, 0, 56)
 	toggleBtn.Position = UDim2.new(0, 12, 1, -72)
-	toggleBtn.AnchorPoint = Vector2.new(0, 0)
 	toggleBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
 	toggleBtn.Text = "Sav\nHub"
 	toggleBtn.TextWrapped = true
@@ -225,10 +250,9 @@ local function createUI()
 	toggleBtn.ZIndex = 50
 	toggleBtn.Active = true
 
-	-- Toggle button drag & tap
+	-- toggle & drag for mobile button
 	local tDragging = false
 	local tDragInput, tDragStartPos, tStartPosAbs
-
 	toggleBtn.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			tDragInput = input
@@ -241,7 +265,7 @@ local function createUI()
 		if tDragging and input == tDragInput then
 			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
 				local delta = input.Position - tDragStartPos
-				local view = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+				local view = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
 				local newX = math.clamp(tStartPosAbs.X + delta.X, 0, view.X - toggleBtn.AbsoluteSize.X)
 				local newY = math.clamp(tStartPosAbs.Y + delta.Y, 0, view.Y - toggleBtn.AbsoluteSize.Y)
 				toggleBtn.Position = UDim2.new(0, newX, 0, newY)
@@ -251,7 +275,6 @@ local function createUI()
 	toggleBtn.InputEnded:Connect(function(input)
 		if input == tDragInput then
 			tDragging = false
-			-- treat small movement as tap
 			local moved = (input.Position - tDragStartPos).Magnitude
 			if moved < 10 then
 				SavageHub.MenuVisible = not SavageHub.MenuVisible
@@ -261,15 +284,22 @@ local function createUI()
 		end
 	end)
 
-	-- Button callbacks
+	-- button callbacks
 	flyBtn.MouseButton1Click:Connect(function()
 		SavageHub.Fly = not SavageHub.Fly
 		flyBtn.Text = "Fly: " .. (SavageHub.Fly and "ON" or "OFF")
+		-- If we just turned Fly off, reapply humanoid values
+		if not SavageHub.Fly then
+			applyHumanoidSettings()
+		end
 	end)
 	flyBtn.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch then
 			SavageHub.Fly = not SavageHub.Fly
 			flyBtn.Text = "Fly: " .. (SavageHub.Fly and "ON" or "OFF")
+			if not SavageHub.Fly then
+				applyHumanoidSettings()
+			end
 		end
 	end)
 
@@ -284,7 +314,6 @@ local function createUI()
 		end
 	end)
 
-	-- Toggle with keyboard (desktop)
 	UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if gameProcessed then return end
 		if input.KeyCode == SavageHub.ToggleKey then
@@ -293,7 +322,7 @@ local function createUI()
 		end
 	end)
 
-	-- Connect slider changes to settings
+	-- slider change callbacks now call applyHumanoidSettings when relevant
 	flySpeedBar.ChangeCallback = function(v)
 		SavageHub.FlySpeed = v
 		flySpeedLbl.Text = "FlySpeed: " .. tostring(v)
@@ -309,25 +338,21 @@ local function createUI()
 	walkBar.ChangeCallback = function(v)
 		SavageHub.WalkSpeed = v
 		walkLbl.Text = "WalkSpeed: " .. tostring(v)
-		if humanoid and humanoid.Parent and not SavageHub.Fly then
-			pcall(function() humanoid.WalkSpeed = SavageHub.WalkSpeed end)
-		end
+		applyHumanoidSettings()
 	end
 	jumpBar.ChangeCallback = function(v)
 		SavageHub.JumpPower = v
 		jumpLbl.Text = "JumpPower: " .. tostring(v)
-		if humanoid and humanoid.Parent then
-			pcall(function() humanoid.JumpPower = SavageHub.JumpPower end)
-		end
+		applyHumanoidSettings()
 	end
 
-	-- ========== Dragging for the main menu ==========
+	-- dragging the title to move the main menu
 	local dragging = false
 	local dragInput = nil
 	local dragStartPos = Vector2.new(0,0)
 	local guiStartPos = Vector2.new(0,0)
 
-	-- Wait until AbsolutePosition/Size are available (first frame)
+	-- wait for AbsoluteSize to exist
 	if main.AbsoluteSize.X == 0 then
 		main:GetPropertyChangedSignal("AbsoluteSize"):Wait()
 	end
@@ -351,8 +376,7 @@ local function createUI()
 			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
 				local delta = input.Position - dragStartPos
 				local newPos = guiStartPos + delta
-				-- clamp to viewport
-				local view = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+				local view = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
 				local absSize = main.AbsoluteSize
 				local clampedX = math.clamp(newPos.X, 0, math.max(0, view.X - absSize.X))
 				local clampedY = math.clamp(newPos.Y, 0, math.max(0, view.Y - absSize.Y))
@@ -361,7 +385,7 @@ local function createUI()
 		end
 	end)
 
-	return screenGui, {main = main, flyBtn = flyBtn, toggleBtn = toggleBtn}
+	return screenGui, {main = main, flyBtn = flyBtn}
 end
 
 local gui, widgets = createUI()
@@ -428,7 +452,9 @@ local function computeMoveDirection()
 	if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveVec = moveVec - Vector3.new(0,1,0) end
 
 	-- Mobile touch fallback: when touching and no keyboard input, move forward
-	if UserInputService.TouchEnabled and #UserInputService:GetTouches() > 0 then
+	local touches = {}
+	local success, t = pcall(function() return UserInputService:GetTouches() end)
+	if success and t and #t > 0 then
 		if moveVec.Magnitude == 0 then
 			moveVec = forward
 		end
@@ -460,8 +486,6 @@ local function startFly()
 		local targetVel = Vector3.new(0,0,0)
 		if dir.Magnitude > 0 then
 			targetVel = dir * SavageHub.FlySpeed
-		else
-			targetVel = Vector3.new(0,0,0)
 		end
 
 		local currentVel = hrp.AssemblyLinearVelocity or Vector3.new(0,0,0)
@@ -485,17 +509,18 @@ local function stopFly()
 	if not flying then return end
 	flying = false
 	destroyVectorForce()
+	-- restore humanoid params
 	pcall(function()
 		if humanoid and humanoid.Parent then
 			humanoid.PlatformStand = false
-			humanoid.WalkSpeed = SavageHub.WalkSpeed
-			humanoid.JumpPower = SavageHub.JumpPower
 		end
 	end)
+	applyHumanoidSettings()
 end
 
 -- Monitor the Fly toggle and reapply settings each frame
 RunService.Heartbeat:Connect(function()
+	-- refresh references if player respawned
 	if not char or not char.Parent then
 		char = getCharacter()
 	end
@@ -508,12 +533,9 @@ RunService.Heartbeat:Connect(function()
 		stopFly()
 	end
 
-	-- While not flying, keep humanoid params in sync
+	-- while not flying, keep humanoid params in sync
 	if not SavageHub.Fly and humanoid and humanoid.Parent then
-		pcall(function()
-			humanoid.WalkSpeed = SavageHub.WalkSpeed
-			humanoid.JumpPower = SavageHub.JumpPower
-		end)
+		applyHumanoidSettings()
 	end
 end)
 
@@ -523,32 +545,23 @@ player.CharacterAdded:Connect(function(c)
 	char = c
 	humanoid = char:FindFirstChild("Humanoid") or humanoid
 	hrp = char:FindFirstChild("HumanoidRootPart") or hrp
+	-- ensure new humanoid gets the chosen values
+	applyHumanoidSettings(humanoid)
+	-- if we were flying, start fly for new hrp
 	if SavageHub.Fly then
 		startFly()
-	else
-		if humanoid and humanoid.Parent then
-			pcall(function()
-				humanoid.WalkSpeed = SavageHub.WalkSpeed
-				humanoid.JumpPower = SavageHub.JumpPower
-			end)
-		end
 	end
 end)
 
--- Cleanup on death
+-- cleanup on death
 if humanoid then
 	humanoid.Died:Connect(function()
 		stopFly()
 	end)
 end
 
--- Initial apply
-if humanoid and humanoid.Parent then
-	pcall(function()
-		humanoid.WalkSpeed = SavageHub.WalkSpeed
-		humanoid.JumpPower = SavageHub.JumpPower
-	end)
-end
+-- initial apply
+applyHumanoidSettings()
 
 StarterGui:SetCore("SendNotification", {
 	Title = "Savage Hub";
