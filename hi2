@@ -1,13 +1,12 @@
 -- SavageHub.lua
 -- Place this LocalScript into StarterPlayerScripts in a Roblox Studio place you own.
--- Single-file "Savage Hub": draggable menu, sliders, VectorForce-based flying, touch/mobile friendly.
+-- Draggable menu (fixed), mobile-friendly toggle, sliders, and VectorForce-based flying.
 -- Use only in places you own or have permission to modify.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local StarterGui = game:GetService("StarterGui")
-local GuiService = game:GetService("GuiService")
 
 local player = Players.LocalPlayer
 
@@ -38,15 +37,14 @@ local function createUI()
 	screenGui.Name = "SavageHubGUI"
 	screenGui.ResetOnSpawn = false
 	screenGui.Parent = player:WaitForChild("PlayerGui")
-	-- Make sure it displays on top for mobile
 	screenGui.IgnoreGuiInset = true
 
-	-- Main draggable frame
+	-- Main draggable frame (use AnchorPoint 0,0 to simplify dragging)
 	local main = Instance.new("Frame")
 	main.Name = "Main"
 	main.Size = UDim2.new(0, 360, 0, 260)
-	main.Position = UDim2.new(0, 16, 0.45, -130)
-	main.AnchorPoint = Vector2.new(0, 0.5)
+	main.Position = UDim2.new(0, 16, 0, 100) -- initial top-left
+	main.AnchorPoint = Vector2.new(0, 0)
 	main.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
 	main.BorderSizePixel = 0
 	main.Parent = screenGui
@@ -59,7 +57,7 @@ local function createUI()
 	title.Position = UDim2.new(0, 0, 0, 0)
 	title.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 	title.Parent = main
-	title.Active = true -- allow input
+	title.Active = true -- accept input for dragging
 
 	local titleLabel = Instance.new("TextLabel")
 	titleLabel.Name = "TitleLabel"
@@ -162,7 +160,7 @@ local function createUI()
 			local absX = pos.X
 			local barAbsPos = bar.AbsolutePosition.X
 			local barWidth = bar.AbsoluteSize.X
-			local rel = math.clamp((absX - barAbsPos) / barWidth, 0, 1)
+			local rel = math.clamp((absX - barAbsPos) / math.max(1, barWidth), 0, 1)
 			local raw = minVal + (maxVal - minVal) * rel
 			local stepped = minVal + math.floor((raw - minVal) / step + 0.5) * step
 			stepped = math.clamp(stepped, minVal, maxVal)
@@ -225,16 +223,17 @@ local function createUI()
 	toggleBtn.Parent = screenGui
 	toggleBtn.AutoButtonColor = true
 	toggleBtn.ZIndex = 50
-	-- make toggle button draggable slightly so it doesn't block UI permanently
+	toggleBtn.Active = true
+
+	-- Toggle button drag & tap
 	local tDragging = false
-	local tDragInput, tDragStartPos, tStartPos
+	local tDragInput, tDragStartPos, tStartPosAbs
 
 	toggleBtn.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			-- short press toggles; long-drag moves button
 			tDragInput = input
 			tDragStartPos = input.Position
-			tStartPos = toggleBtn.Position
+			tStartPosAbs = toggleBtn.AbsolutePosition
 			tDragging = true
 		end
 	end)
@@ -242,12 +241,9 @@ local function createUI()
 		if tDragging and input == tDragInput then
 			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
 				local delta = input.Position - tDragStartPos
-				-- calculate new position in pixels and clamp to viewport
 				local view = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
-				local newX = (tStartPos.X.Scale == 0 and tStartPos.X.Offset or 0) + delta.X
-				local newY = (tStartPos.Y.Scale == 0 and tStartPos.Y.Offset or 0) + delta.Y
-				newX = math.clamp(newX, 0, view.X - toggleBtn.AbsoluteSize.X)
-				newY = math.clamp(newY, 0, view.Y - toggleBtn.AbsoluteSize.Y)
+				local newX = math.clamp(tStartPosAbs.X + delta.X, 0, view.X - toggleBtn.AbsoluteSize.X)
+				local newY = math.clamp(tStartPosAbs.Y + delta.Y, 0, view.Y - toggleBtn.AbsoluteSize.Y)
 				toggleBtn.Position = UDim2.new(0, newX, 0, newY)
 			end
 		end
@@ -255,7 +251,7 @@ local function createUI()
 	toggleBtn.InputEnded:Connect(function(input)
 		if input == tDragInput then
 			tDragging = false
-			-- If it was a quick tap (small movement), treat as toggle
+			-- treat small movement as tap
 			local moved = (input.Position - tDragStartPos).Magnitude
 			if moved < 10 then
 				SavageHub.MenuVisible = not SavageHub.MenuVisible
@@ -270,7 +266,6 @@ local function createUI()
 		SavageHub.Fly = not SavageHub.Fly
 		flyBtn.Text = "Fly: " .. (SavageHub.Fly and "ON" or "OFF")
 	end)
-	-- Also support touch activation for toggle (in case MouseButton1 doesn't fire on some devices)
 	flyBtn.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch then
 			SavageHub.Fly = not SavageHub.Fly
@@ -332,6 +327,11 @@ local function createUI()
 	local dragStartPos = Vector2.new(0,0)
 	local guiStartPos = Vector2.new(0,0)
 
+	-- Wait until AbsolutePosition/Size are available (first frame)
+	if main.AbsoluteSize.X == 0 then
+		main:GetPropertyChangedSignal("AbsoluteSize"):Wait()
+	end
+
 	title.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
@@ -353,8 +353,9 @@ local function createUI()
 				local newPos = guiStartPos + delta
 				-- clamp to viewport
 				local view = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
-				local clampedX = math.clamp(newPos.X, 0, view.X - main.AbsoluteSize.X)
-				local clampedY = math.clamp(newPos.Y, 0, view.Y - main.AbsoluteSize.Y)
+				local absSize = main.AbsoluteSize
+				local clampedX = math.clamp(newPos.X, 0, math.max(0, view.X - absSize.X))
+				local clampedY = math.clamp(newPos.Y, 0, math.max(0, view.Y - absSize.Y))
 				main.Position = UDim2.new(0, clampedX, 0, clampedY)
 			end
 		end
@@ -372,7 +373,6 @@ local attach -- Attachment
 local forceConn -- Heartbeat connection
 
 local function createVectorForceFor(part)
-	-- create an attachment and VectorForce on the HRP
 	local existingAttach = part:FindFirstChild("SavageHub_Attachment")
 	if existingAttach then
 		attach = existingAttach
@@ -427,13 +427,9 @@ local function computeMoveDirection()
 	if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveVec = moveVec + Vector3.new(0,1,0) end
 	if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveVec = moveVec - Vector3.new(0,1,0) end
 
-	-- For mobile touch, there's no keyboard. Basic behavior:
-	-- If user is touching anywhere besides UI, attempt to move toward camera look direction.
-	-- More advanced virtual joystick can be added later; this is simple fallback.
+	-- Mobile touch fallback: when touching and no keyboard input, move forward
 	if UserInputService.TouchEnabled and #UserInputService:GetTouches() > 0 then
-		-- if touch exists and no keyboard input, float forward relative to camera
 		if moveVec.Magnitude == 0 then
-			-- slight forward push when touching (makes flight usable on mobile)
 			moveVec = forward
 		end
 	end
@@ -457,11 +453,9 @@ local function startFly()
 	forceConn = RunService.Heartbeat:Connect(function(dt)
 		if not vf or not hrp or not hrp.Parent then return end
 
-		-- mass of HRP (approx)
 		local mass = 1
 		pcall(function() mass = hrp:GetMass() end)
 
-		-- compute target velocity based on input
 		local dir = computeMoveDirection()
 		local targetVel = Vector3.new(0,0,0)
 		if dir.Magnitude > 0 then
@@ -472,10 +466,9 @@ local function startFly()
 
 		local currentVel = hrp.AssemblyLinearVelocity or Vector3.new(0,0,0)
 		local responsiveness = math.max(1, SavageHub.FlyResponsiveness)
-		local desiredAcc = (targetVel - currentVel) * responsiveness -- studs/s^2
-		local rawForce = desiredAcc * mass -- N
+		local desiredAcc = (targetVel - currentVel) * responsiveness
+		local rawForce = desiredAcc * mass
 
-		-- clamp force magnitude
 		local maxForce = math.max(1, SavageHub.FlyForceMax)
 		local clampedForce
 		if rawForce.Magnitude > maxForce then
@@ -484,7 +477,6 @@ local function startFly()
 			clampedForce = rawForce
 		end
 
-		-- Apply the force
 		vf.Force = clampedForce
 	end)
 end
@@ -504,7 +496,6 @@ end
 
 -- Monitor the Fly toggle and reapply settings each frame
 RunService.Heartbeat:Connect(function()
-	-- Ensure references are up-to-date (in case of respawn)
 	if not char or not char.Parent then
 		char = getCharacter()
 	end
@@ -532,7 +523,6 @@ player.CharacterAdded:Connect(function(c)
 	char = c
 	humanoid = char:FindFirstChild("Humanoid") or humanoid
 	hrp = char:FindFirstChild("HumanoidRootPart") or hrp
-	-- re-enable flight if it was on
 	if SavageHub.Fly then
 		startFly()
 	else
@@ -562,6 +552,6 @@ end
 
 StarterGui:SetCore("SendNotification", {
 	Title = "Savage Hub";
-	Text = "Savage Hub loaded. Drag the title to move the menu. Use the bottom-left button on mobile to open/close. Use only in places you own.";
+	Text = "Savage Hub loaded. Drag the title bar to move the menu. Use the bottom-left button on mobile to open/close. Use only in places you own.";
 	Duration = 8;
 })
